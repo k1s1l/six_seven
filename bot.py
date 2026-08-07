@@ -20,6 +20,7 @@ bot.py — мемный Telegram-бот «67».
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -33,6 +34,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiohttp import web
 
 from config import load_config
 
@@ -256,12 +258,46 @@ async def send_67_messages(
 
 
 # --------------------------------------------------------------------------- 
+# Health-check веб-сервер (нужен для хостингов вроде Railway)
+# --------------------------------------------------------------------------- 
+# Некоторые хостинги (в т.ч. Railway, если сервис создан как "Web Service")
+# ожидают, что приложение слушает HTTP-порт $PORT и отвечает на запросы,
+# иначе считают деплой нерабочим и перезапускают/убивают процесс.
+# Бот работает через long polling и сам по себе порт не открывает,
+# поэтому параллельно поднимаем простой HTTP-сервер с "заглушкой" /health.
+async def start_health_server() -> None:
+    port_str = os.getenv("PORT")
+    if not port_str:
+        # Переменная PORT не задана — значит, хостинг не требует HTTP-порт
+        # (например, сервис настроен как Worker). Ничего не делаем.
+        logger.info("PORT не задан — health-check сервер не запускается.")
+        return
+
+    port = int(port_str)
+
+    async def health(_request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+    logger.info("Health-check сервер запущен на порту %s", port)
+
+
+# --------------------------------------------------------------------------- 
 # Точка входа
 # --------------------------------------------------------------------------- 
 async def main() -> None:
     bot = Bot(token=config.bot_token, parse_mode=ParseMode.HTML)
     dp = Dispatcher()
     dp.include_router(router)
+
+    await start_health_server()
 
     logger.info("Бот запущен, начинаю polling...")
     await bot.delete_webhook(drop_pending_updates=True)
